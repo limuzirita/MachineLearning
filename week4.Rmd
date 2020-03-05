@@ -1,0 +1,153 @@
+---
+title: "ML Course Project"
+author: "Muzi Li"
+date: "2/18/2020"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, echo = TRUE)
+library(ggplot2)
+library(rmarkdown)
+library(tinytex)
+library(caret)
+library(dplyr)
+```
+
+The goal of this project is to predict the manner in which they did the exercise.
+
+```{r data_download}
+# Create the data folder and define the directory for data
+dataDir <- "./data"
+if(!dir.exists(dataDir)){
+    dir.create(dataDir)
+}
+
+# Define the data file
+activity_train <- paste(dataDir, "activity_train.csv", sep="/")
+activity_valid <- paste(dataDir, "activity_valid.csv", sep="/")
+
+# Perform datafile download with the link
+if(!file.exists(activity_train)){
+    url<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(url, destfile = activity_train)
+}
+if(!file.exists(activity_valid)){
+    url<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(url, destfile = activity_valid)
+}
+```
+
+## Data Format
+
+First, we need to format the data and process it into the useful form. 
+```{r data_format}
+# Read data and format it
+activity.Raw.train <- read.csv(activity_train, na.strings=c("NA","#DIV/0!", ""))
+activity.Raw.valid <- read.csv(activity_valid, na.strings=c("NA","#DIV/0!", ""))
+
+activity_train<-activity.Raw.train[,colSums(is.na(activity.Raw.train)) == 0]
+activity_valid <-activity.Raw.valid[,colSums(is.na(activity.Raw.valid)) == 0]
+```
+
+## Data Split
+
+Then, we need to control some columns that should not be used in the modeling and split the data into 2 parts, train and valid in 70-30 manner using y.
+```{r process_and_split_data}
+# Check what are the control variables
+# table(activity_train$new_window);table(activity_train$num_window)
+
+activity_train <- activity_train[,-c(1:7)]
+activity_valid <- activity_valid[,-c(1:7)]
+
+activity <- activity_train
+train_index <- createDataPartition(y=activity$classe, p=0.7, list=FALSE)
+activity_train <- activity[train_index, ] 
+activity_test <- activity[-train_index, ]
+```
+
+## Decision Tree
+
+The first model used is decision tree. Fit the data with classification and perform 10-fold cross validation to make the process more robustics and reliable.
+```{r decision_tree}
+library(rpart)
+dt <- rpart(classe ~., data = activity_train, method = 'class', xval = 10)
+dt.pred = predict(dt, activity_test, type="class")
+```
+
+## Random Forest
+
+The second model used is random forest. Fit the data with classification and random forest itself is to produce many trees and make the result with low variance.
+```{r random_forest}
+library(randomForest)
+#rf.cv <- rfcv(activity_train, activity_train$classe, cv.fold=10)
+rf <- randomForest(classe ~. , data=activity_train, method="class")
+rf.pred = predict(rf, activity_test, type="class")
+```
+
+## GBM
+
+The third model used is GBM. Training data has been further split into training and testing data lists. Fit the data with multi-classification and perform 5-fold cross validation.
+```{r GBM}
+library(xgboost)
+# Process data as xgboost friendly type
+xgb_train_index <- createDataPartition(y=activity_train$classe, p=0.7, list=FALSE)
+xgb_activity_train <- activity_train[xgb_train_index, ] 
+xgb_activity_test <- activity_train[-xgb_train_index, ]
+train.mat <-  xgb.DMatrix(as.matrix(xgb_activity_train %>% select(-classe)), label = xgb_activity_train$classe)
+test.mat <- xgb.DMatrix(as.matrix(xgb_activity_test %>% select(-classe)), label = xgb_activity_test$classe)
+watchlist <- list(train = train.mat, eval = test.mat)
+
+# # prepare rounds for cv
+ numberOfClasses <- length(unique(activity$classe))+1
+ xgb_params <- list("objective" = "multi:softprob",
+                    "eval_metric" = "mlogloss",
+                   "num_class" = numberOfClasses)
+# nround    <- 1000 # number of XGBoost rounds
+# cv.nfold  <- 5
+# 
+# # Fit cv.nfold * cv.nround XGB models and save OOF predictions
+# xgbcv <- xgb.cv(params = xgb_params,
+#                    data = train.mat, 
+#                    nrounds = nround,
+#                    nfold = cv.nfold,
+#                    verbose = FALSE,
+#                    prediction = TRUE)
+# which.min(xgbcv$evaluation_log[, test_mlogloss_mean])
+xgb <- xgb.train (data = train.mat, nrounds = 994 , watchlist = watchlist, print_every_n = 100,
+                  early_stop_round = 10, maximize = F , params=xgb_params)
+valid.mat <- xgb.DMatrix(as.matrix(activity_test %>% select(-classe)), label = activity_test$classe)
+xgb.pred <- predict(xgb, valid.mat, reshape=T)
+xgb.pred = as.data.frame(xgb.pred[,-1])
+colnames(xgb.pred) = levels(activity$classe)
+xgb.pred$prediction = apply(xgb.pred,1,function(x) colnames(xgb.pred)[which.max(x)])
+```
+
+### Below are the confusion Matrix for three models
+
+#### For Decision Tree, the accuracy is 0.7524
+```{r dt_valid}
+confusionMatrix(dt.pred, activity_test$classe)
+```
+
+#### For Random Forest, the accuracy is 0.9939
+```{r rf_valid}
+confusionMatrix(rf.pred, activity_test$classe)
+```
+
+#### For XGB, the accuracy is 0.9932
+```{r xgb_valid}
+confusionMatrix(as.factor(xgb.pred$prediction), activity_test$classe)
+```
+
+#### Since the accuracy of random forest is 0.9939, which is the highest amomng three models, RF is selected.
+```{r}
+predict_final = predict(rf, activity_valid, type="class")
+```
+
+
+
+
+
+
+
